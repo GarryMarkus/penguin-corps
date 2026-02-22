@@ -38,20 +38,26 @@ function ProtectedNavigation() {
     const inAuthGroup = segments[0] === "auth";
     const inOnboarding = segments[0] === "onboarding";
 
-    if (!token && !inAuthGroup && !inOnboarding) {
-      router.replace("/auth/login");
-    } else if (token && inAuthGroup && segments[1] !== "signup") {
-      if (user?.isSmoker === false) {
-        router.replace("/fitness");
-      } else {
-        router.replace("/(tabs)");
+    if (!token) {
+      // Unauthenticated users must be in auth or onboarding (e.g. signup flow)
+      if (!inAuthGroup && !inOnboarding) {
+        router.replace("/auth/login");
       }
-    } else if (token && inOnboarding && user) {
-      if (user?.isSmoker === false) {
-        router.replace("/fitness");
-      } else {
-        router.replace("/(tabs)");
+      return;
+    }
+
+    if (token && user) {
+      // Authenticated users in Auth screens should be redirected inward
+      if (inAuthGroup && segments[1] !== "signup") {
+        if (user?.isSmoker === false) {
+          router.replace("/fitness");
+        } else {
+          router.replace("/(tabs)");
+        }
+        return;
       }
+
+      // We do not need to drag authenticated users back into onboarding once they reach the main tabs
     }
   }, [loading, token, segments, user]);
 
@@ -73,20 +79,23 @@ function ProtectedNavigation() {
 
   return (
     <Stack screenOptions={{ headerShown: false }}>
-      {}
+      { }
       <Stack.Screen name="auth/login" />
       <Stack.Screen name="auth/signup" />
 
-      {}
+      { }
       <Stack.Screen name="onboarding/questionnaire" />
+      <Stack.Screen name="onboarding/health-sync-setup" />
+      <Stack.Screen name="onboarding/mode-selection" />
+      <Stack.Screen name="onboarding/duo-pairing" />
 
-      {}
+      { }
       <Stack.Screen name="(tabs)" />
 
-      {}
+      { }
       <Stack.Screen name="fitness" />
 
-      {}
+      { }
       <Stack.Screen
         name="ai-coach"
         options={{
@@ -95,7 +104,7 @@ function ProtectedNavigation() {
         }}
       />
 
-      {}
+      { }
       <Stack.Screen name="modal" options={{ presentation: "modal" }} />
     </Stack>
   );

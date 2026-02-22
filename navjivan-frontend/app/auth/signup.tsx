@@ -38,9 +38,6 @@ export default function SignupScreen() {
     name: "",
     email: "",
     password: "",
-    age: "",
-    height: "",
-    weight: "",
   });
 
   const [loading, setLoading] = useState(false);
@@ -73,21 +70,16 @@ export default function SignupScreen() {
         name: form.name,
         email: form.email,
         password: form.password,
-        age: Number(form.age) || 0,
-        height: Number(form.height) || 0,
-        weight: Number(form.weight) || 0,
       };
 
       console.log("[Signup] Payload prepared for:", payload.email);
 
       const signupDataStr = JSON.stringify(payload);
-      console.log(
-        "[Signup] Navigating to questionnaire with data length:",
-        signupDataStr.length,
-      );
+      console.log("[Signup] Navigating to mode selection");
 
+      // Go to mode selection first, then rest of onboarding
       router.push({
-        pathname: "/onboarding/questionnaire",
+        pathname: "/onboarding/mode-selection",
         params: { signupData: signupDataStr },
       });
     } catch (err: any) {
@@ -165,54 +157,6 @@ export default function SignupScreen() {
               secureTextEntry
               style={styles.input}
               onChangeText={(t) => setForm({ ...form, password: t })}
-            />
-          </View>
-
-          { }
-          <View style={styles.inputBox}>
-            <Ionicons
-              name="calendar-outline"
-              size={RFValue(18)}
-              color={PLACEHOLDER}
-            />
-            <TextInput
-              placeholder="Age"
-              placeholderTextColor={PLACEHOLDER}
-              style={styles.input}
-              keyboardType="number-pad"
-              onChangeText={(t) => setForm({ ...form, age: t })}
-            />
-          </View>
-
-          { }
-          <View style={styles.inputBox}>
-            <Ionicons
-              name="resize-outline"
-              size={RFValue(18)}
-              color={PLACEHOLDER}
-            />
-            <TextInput
-              placeholder="Height (cm)"
-              placeholderTextColor={PLACEHOLDER}
-              style={styles.input}
-              keyboardType="number-pad"
-              onChangeText={(t) => setForm({ ...form, height: t })}
-            />
-          </View>
-
-          { }
-          <View style={styles.inputBox}>
-            <Ionicons
-              name="barbell-outline"
-              size={RFValue(18)}
-              color={PLACEHOLDER}
-            />
-            <TextInput
-              placeholder="Weight (kg)"
-              placeholderTextColor={PLACEHOLDER}
-              style={styles.input}
-              keyboardType="number-pad"
-              onChangeText={(t) => setForm({ ...form, weight: t })}
             />
           </View>
 

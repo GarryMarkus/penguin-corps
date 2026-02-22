@@ -307,3 +307,154 @@ export const leaveDuo = async (req, res) => {
     res.status(500).json({ success: false, message: "Server error" });
   }
 };
+
+// Get detailed partner dashboard info
+export const getPartnerDashboard = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const user = await User.findById(userId);
+
+    if (!user.duoId) {
+      return res.json({ success: true, hasDuo: false });
+    }
+
+    const duo = await Duo.findById(user.duoId)
+      .populate("userA", "name email isSmoker streak profileImage")
+      .populate("userB", "name email isSmoker streak profileImage");
+
+    if (!duo || duo.status !== "active") {
+      return res.json({ success: true, hasDuo: false });
+    }
+
+    // Auto-reset daily stats
+    if (duo.resetIfNewDay()) {
+      await duo.save();
+    }
+
+    const isUserA = duo.userA?._id.toString() === userId;
+    const partner = isUserA ? duo.userB : duo.userA;
+    const partnerSuffix = isUserA ? "B" : "A";
+    const mySuffix = isUserA ? "A" : "B";
+
+    if (!partner) {
+      return res.json({ success: true, hasDuo: true, status: "pending", partner: null });
+    }
+
+    // Extract partner's stats from sharedPlant
+    const partnerStats = {
+      water: duo.sharedPlant[`water${partnerSuffix}`] || 0,
+      meals: duo.sharedPlant[`meals${partnerSuffix}`] || 0,
+      goalsCompleted: duo.sharedPlant[`goalsCompleted${partnerSuffix}`] || 0,
+      goalsTotal: duo.sharedPlant[`goalsTotal${partnerSuffix}`] || 0,
+      smokes: duo.sharedPlant[`smokes${partnerSuffix}`] || 0,
+      steps: duo.sharedPlant[`steps${partnerSuffix}`] || 0,
+      calories: duo.sharedPlant[`calories${partnerSuffix}`] || 0,
+    };
+
+    // My stats
+    const myStats = {
+      water: duo.sharedPlant[`water${mySuffix}`] || 0,
+      meals: duo.sharedPlant[`meals${mySuffix}`] || 0,
+      goalsCompleted: duo.sharedPlant[`goalsCompleted${mySuffix}`] || 0,
+      goalsTotal: duo.sharedPlant[`goalsTotal${mySuffix}`] || 0,
+      smokes: duo.sharedPlant[`smokes${mySuffix}`] || 0,
+      steps: duo.sharedPlant[`steps${mySuffix}`] || 0,
+      calories: duo.sharedPlant[`calories${mySuffix}`] || 0,
+    };
+
+    res.json({
+      success: true,
+      hasDuo: true,
+      status: duo.status,
+      partner: {
+        name: partner.name,
+        email: partner.email,
+        isSmoker: partner.isSmoker,
+        streak: partner.streak,
+        profileImage: partner.profileImage,
+        stats: partnerStats,
+      },
+      myStats,
+      plantStage: duo.getPlantStage(),
+      sharedPlant: duo.sharedPlant,
+    });
+  } catch (error) {
+    console.error("[Duo] Partner dashboard error:", error);
+    res.status(500).json({ success: false, message: "Server error" });
+  }
+};
+
+// Log water/meal/smoke for partner (support feature)
+export const logForPartner = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { type, value } = req.body; // type: "water" | "meal" | "smoke", value: number
+
+    if (!["water", "meal", "smoke"].includes(type)) {
+      return res.status(400).json({ success: false, message: "Invalid type. Must be water, meal, or smoke." });
+    }
+
+    const user = await User.findById(userId);
+    if (!user.duoId) {
+      return res.status(400).json({ success: false, message: "Not in a Duo." });
+    }
+
+    const duo = await Duo.findById(user.duoId)
+      .populate("userA", "name pushToken")
+      .populate("userB", "name pushToken");
+
+    if (!duo || duo.status !== "active") {
+      return res.status(400).json({ success: false, message: "Duo not active." });
+    }
+
+    duo.resetIfNewDay();
+
+    const isUserA = duo.userA._id.toString() === userId;
+    const partnerSuffix = isUserA ? "B" : "A";
+    const partner = isUserA ? duo.userB : duo.userA;
+    const loggerName = user.name;
+
+    const amount = value || 1;
+
+    // Update partner's stats
+    switch (type) {
+      case "water":
+        duo.sharedPlant[`water${partnerSuffix}`] = (duo.sharedPlant[`water${partnerSuffix}`] || 0) + amount;
+        break;
+      case "meal":
+        duo.sharedPlant[`meals${partnerSuffix}`] = (duo.sharedPlant[`meals${partnerSuffix}`] || 0) + amount;
+        break;
+      case "smoke":
+        duo.sharedPlant[`smokes${partnerSuffix}`] = (duo.sharedPlant[`smokes${partnerSuffix}`] || 0) + amount;
+        break;
+    }
+
+    await duo.save();
+
+    // Notify partner
+    if (partner?.pushToken) {
+      const messages = {
+        water: `💧 ${loggerName} logged water for you! Stay hydrated! 🌱`,
+        meal: `🍽️ ${loggerName} logged a meal for you! Great nutrition! 🌱`,
+        smoke: `🚬 ${loggerName} logged a smoke for you. Your plant is hurting. 😔`,
+      };
+      await sendPushNotification(
+        partner.pushToken,
+        type === "smoke" ? "🚬 Smoke Logged" : "📝 Activity Logged",
+        messages[type],
+        { type: "duo_partner_log", logType: type }
+      );
+    }
+
+    console.log(`[Duo] ${loggerName} logged ${type} for partner ${partner.name}`);
+    res.json({
+      success: true,
+      message: `${type.charAt(0).toUpperCase() + type.slice(1)} logged for partner!`,
+      sharedPlant: duo.sharedPlant,
+      plantStage: duo.getPlantStage(),
+    });
+  } catch (error) {
+    console.error("[Duo] Log for partner error:", error);
+    res.status(500).json({ success: false, message: "Server error" });
+  }
+};

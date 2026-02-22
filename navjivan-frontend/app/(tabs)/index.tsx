@@ -1,13 +1,14 @@
 import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-
+import { CameraView, useCameraPermissions } from 'expo-camera';
 import { Link, useRouter } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
-import React, { useContext, useEffect, useState } from 'react';
+import React, { useContext, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
   Dimensions,
+  Image,
   Modal,
   Pressable,
   RefreshControl,
@@ -29,8 +30,9 @@ import Svg, { Circle, Defs, Ellipse, G, Path, RadialGradient, Rect, Stop } from 
 import { LPColors } from '../../constants/theme';
 import { AuthContext } from '../../context/AuthContext';
 import { useGoals } from '../../context/GoalsContext';
-import { analyzeFoodApi, fetchDashboardSummary } from '../../services/api';
+import { analyzeFoodApi, fetchDashboardSummary, generatePantryRecipesApi, verifyWaterImageApi } from '../../services/api';
 import { LPHaptics } from '../../services/haptics';
+import * as FileSystem from 'expo-file-system';
 
 const { width: SCREEN_W } = Dimensions.get('window');
 const CONSOLE_PAD = 16;
@@ -325,11 +327,20 @@ export default function HomeScreen() {
   const [showSmokeModal, setShowSmokeModal] = useState(false);
   const [showGoalsModal, setShowGoalsModal] = useState(false);
 
-  // Meal
+  // Meal - Enhanced with mode selection and nutrition preview
+  const [mealMode, setMealMode] = useState<'select' | 'log' | 'plan' | 'preview' | 'recipes'>('select');
   const [mealInput, setMealInput] = useState('');
   const [ingredientInput, setIngredientInput] = useState('');
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [meals, setMeals] = useState<any[]>([]);
+  
+  // Nutrition Preview
+  const [nutritionPreview, setNutritionPreview] = useState<any>(null);
+  
+  // Meal Planning
+  const [mealTypeSelection, setMealTypeSelection] = useState<'breakfast' | 'lunch' | 'dinner' | 'snack'>('lunch');
+  const [pantryRecipes, setPantryRecipes] = useState<any[]>([]);
+  const [isGeneratingRecipes, setIsGeneratingRecipes] = useState(false);
 
   // Smoke
   const [smokesToday, setSmokesToday] = useState(0);
@@ -338,6 +349,13 @@ export default function HomeScreen() {
   const [waterAnimActive, setWaterAnimActive] = useState(false);
   const [smokeAnimActive, setSmokeAnimActive] = useState(false);
   const [sparkleActive, setSparkleActive] = useState(false);
+
+  // Water photo camera
+  const [showWaterCamera, setShowWaterCamera] = useState(false);
+  const [cameraPermission, requestCameraPermission] = useCameraPermissions();
+  const cameraRef = useRef<any>(null);
+  const [capturedWaterPhoto, setCapturedWaterPhoto] = useState<string | null>(null);
+  const [verifyingWater, setVerifyingWater] = useState(false);
 
   const { goals, toggleGoalCompletion, waterIntake, updateWaterIntake, streak } = useGoals();
   const completedGoals = goals.filter(g => g.completed).length;
@@ -447,12 +465,88 @@ export default function HomeScreen() {
     try { const { logDuoSmokeApi } = await import('../../services/api'); await logDuoSmokeApi(count); } catch (e) { }
   };
 
-  // Water
-  const handleWater = () => {
-    updateWaterIntake(waterIntake + 1);
-    setWaterAnimActive(true);
-    setTimeout(() => setWaterAnimActive(false), 1500);
-    LPHaptics.success();
+  // Water - requires photo proof
+  const openWaterCamera = async () => {
+    if (!cameraPermission?.granted) {
+      const result = await requestCameraPermission();
+      if (!result.granted) {
+        Alert.alert('Camera Required', 'Please allow camera access to log water intake with a photo.');
+        return;
+      }
+    }
+    setCapturedWaterPhoto(null);
+    setShowWaterCamera(true);
+  };
+
+  const takeWaterPhoto = async () => {
+    if (cameraRef.current) {
+      try {
+        const photo = await cameraRef.current.takePictureAsync({ quality: 0.5 });
+        setCapturedWaterPhoto(photo.uri);
+        LPHaptics.success();
+      } catch (e) {
+        LPHaptics.error();
+        Alert.alert('Error', 'Failed to take photo');
+      }
+    }
+  };
+
+  const confirmWaterLog = async () => {
+    if (!capturedWaterPhoto) return;
+    
+    setVerifyingWater(true);
+    try {
+      // Read the image and convert to base64
+      const base64 = await FileSystem.readAsStringAsync(capturedWaterPhoto, {
+        encoding: FileSystem.EncodingType.Base64,
+      });
+      
+      // Verify with AI
+      const response = await verifyWaterImageApi(`data:image/jpeg;base64,${base64}`);
+      const { isWater, confidence, reason } = response.data;
+      
+      if (isWater && confidence >= 50) {
+        // Water verified - log it
+        updateWaterIntake(waterIntake + 1);
+        setWaterAnimActive(true);
+        setTimeout(() => setWaterAnimActive(false), 1500);
+        LPHaptics.success();
+        setShowWaterCamera(false);
+        setCapturedWaterPhoto(null);
+        Alert.alert('💧 Hydrated!', `Water logged! ${confidence >= 80 ? '✨ Perfect shot!' : ''}`);
+      } else {
+        // Not water - reject
+        LPHaptics.error();
+        Alert.alert(
+          '❌ Not Water Detected',
+          reason || 'Please take a clear photo of your water bottle or glass of water.',
+          [{ text: 'Try Again', onPress: () => setCapturedWaterPhoto(null) }]
+        );
+      }
+    } catch (error) {
+      console.log('Water verification error:', error);
+      // On network error, allow with warning
+      Alert.alert(
+        '⚠️ Verification Unavailable',
+        'Could not verify the image. Please make sure this is actually water.',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          { 
+            text: 'Log Anyway', 
+            onPress: () => {
+              updateWaterIntake(waterIntake + 1);
+              setWaterAnimActive(true);
+              setTimeout(() => setWaterAnimActive(false), 1500);
+              LPHaptics.success();
+              setShowWaterCamera(false);
+              setCapturedWaterPhoto(null);
+            }
+          }
+        ]
+      );
+    } finally {
+      setVerifyingWater(false);
+    }
   };
 
   // Goals
@@ -465,7 +559,87 @@ export default function HomeScreen() {
     setTimeout(() => setSparkleActive(false), 2000);
   };
 
-  // Meal
+  // Meal - Analyze and show preview
+  const handleAnalyzeMeal = async () => {
+    if (!mealInput.trim()) return;
+    setIsAnalyzing(true);
+    try {
+      const res = await analyzeFoodApi(mealInput);
+      const data: any = res.data;
+      setNutritionPreview({
+        name: data.name || mealInput,
+        calories: data.calories || 0,
+        protein: data.protein || 0,
+        carbs: data.carbs || 0,
+        fats: data.fats || 0,
+      });
+      setMealMode('preview');
+      LPHaptics.success();
+    } catch (err: any) {
+      LPHaptics.error();
+      Alert.alert('Analysis Failed', err.response?.data?.error || 'Could not analyze food.');
+    } finally {
+      setIsAnalyzing(false);
+    }
+  };
+
+  // Confirm and log the meal after preview
+  const handleConfirmMeal = async () => {
+    if (!nutritionPreview) return;
+    const newMeal = {
+      id: Date.now().toString(),
+      ...nutritionPreview,
+      time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+    };
+    const updated = [newMeal, ...meals];
+    setMeals(updated);
+    await AsyncStorage.setItem(MEAL_KEY, JSON.stringify(updated));
+    await AsyncStorage.setItem(MEAL_DATE_KEY, new Date().toDateString());
+    
+    // Reset modal state
+    setMealInput('');
+    setNutritionPreview(null);
+    setMealMode('select');
+    setShowMealModal(false);
+    
+    setSparkleActive(true);
+    setTimeout(() => setSparkleActive(false), 2000);
+    LPHaptics.success();
+    Alert.alert('🌱 Plant Fed!', `Logged ${newMeal.name} (${newMeal.calories} kcal)`);
+  };
+
+  // Generate recipes from pantry ingredients
+  const handleGenerateRecipes = async () => {
+    if (!ingredientInput.trim()) {
+      Alert.alert('Missing Ingredients', 'Please enter ingredients you have in your pantry.');
+      return;
+    }
+    setIsGeneratingRecipes(true);
+    try {
+      const res = await generatePantryRecipesApi(ingredientInput, mealTypeSelection);
+      const data: any = res.data;
+      setPantryRecipes(data.recipes || []);
+      setMealMode('recipes');
+      LPHaptics.success();
+    } catch (err: any) {
+      LPHaptics.error();
+      Alert.alert('Generation Failed', err.response?.data?.error || 'Could not generate recipes.');
+    } finally {
+      setIsGeneratingRecipes(false);
+    }
+  };
+
+  // Reset meal modal state
+  const closeMealModal = () => {
+    setShowMealModal(false);
+    setMealMode('select');
+    setMealInput('');
+    setIngredientInput('');
+    setNutritionPreview(null);
+    setPantryRecipes([]);
+  };
+
+  // Legacy function for backward compatibility
   const handleAddMeal = async () => {
     if (!mealInput.trim()) return;
     setIsAnalyzing(true);
@@ -555,7 +729,7 @@ export default function HomeScreen() {
             {/* ── ACTION BUTTONS AREA ── */}
             <View style={s.actionArea}>
               <View style={s.actionCol}>
-                <ActionBtn label="WATER" onPress={handleWater} badge={waterIntake} />
+                <ActionBtn label="WATER" onPress={openWaterCamera} badge={waterIntake} />
                 <ActionBtn label="GOALS" onPress={() => setShowGoalsModal(true)} badge={completedGoals} />
               </View>
               
@@ -628,34 +802,227 @@ export default function HomeScreen() {
         </ScrollView>
       </SafeAreaView>
 
-      {/* ══════ MEAL MODAL ══════ */}
+      {/* ══════ MEAL MODAL - Multi-Step ══════ */}
       <Modal visible={showMealModal} transparent animationType="slide">
         <View style={s.modalOverlay}>
-          <View style={s.modalContent}>
-            <Text style={s.modalTitle}>🍽️ Log a Meal</Text>
-            <Text style={s.modalSub}>Describe what you ate — AI will calculate nutrients and feed your plant!</Text>
-            <TextInput
-              style={s.modalInput}
-              placeholder="e.g. Paneer tikka with naan"
-              placeholderTextColor="#888"
-              value={mealInput}
-              onChangeText={setMealInput}
-              multiline
-            />
-            <Text style={[s.modalSub, { marginTop: 12 }]}>Ingredients you have at home (optional):</Text>
-            <TextInput
-              style={[s.modalInput, { minHeight: 50 }]}
-              placeholder="e.g. rice, dal, tomatoes, onions"
-              placeholderTextColor="#888"
-              value={ingredientInput}
-              onChangeText={setIngredientInput}
-            />
-            <TouchableOpacity style={[s.modalBtn, isAnalyzing && { opacity: 0.6 }]} onPress={handleAddMeal} disabled={isAnalyzing}>
-              {isAnalyzing ? <ActivityIndicator color="#000" /> : <Text style={s.modalBtnText}>Analyze & Feed Plant 🌱</Text>}
-            </TouchableOpacity>
-            <TouchableOpacity onPress={() => setShowMealModal(false)} style={s.modalCancel}>
-              <Text style={s.modalCancelText}>Cancel</Text>
-            </TouchableOpacity>
+          <View style={[s.modalContent, { maxHeight: '90%' }]}>
+            
+            {/* Mode Selection */}
+            {mealMode === 'select' && (
+              <>
+                <Text style={s.modalTitle}>🍽️ Meal Options</Text>
+                <Text style={s.modalSub}>What would you like to do?</Text>
+                
+                <TouchableOpacity 
+                  style={[s.mealOptionBtn, { backgroundColor: 'rgba(85,239,196,0.15)', borderColor: PASTEL.mint }]}
+                  onPress={() => setMealMode('log')}
+                >
+                  <Ionicons name="restaurant-outline" size={28} color={PASTEL.mint} />
+                  <View style={{ flex: 1, marginLeft: 14 }}>
+                    <Text style={s.mealOptionTitle}>Log/Track Meal</Text>
+                    <Text style={s.mealOptionDesc}>Record what you ate with nutrition analysis</Text>
+                  </View>
+                  <Ionicons name="chevron-forward" size={22} color={PASTEL.mint} />
+                </TouchableOpacity>
+
+                <TouchableOpacity 
+                  style={[s.mealOptionBtn, { backgroundColor: 'rgba(116,185,255,0.15)', borderColor: PASTEL.btnBlue }]}
+                  onPress={() => setMealMode('plan')}
+                >
+                  <Ionicons name="bulb-outline" size={28} color={PASTEL.btnBlue} />
+                  <View style={{ flex: 1, marginLeft: 14 }}>
+                    <Text style={s.mealOptionTitle}>Plan Next Meal</Text>
+                    <Text style={s.mealOptionDesc}>Get recipes based on your pantry ingredients</Text>
+                  </View>
+                  <Ionicons name="chevron-forward" size={22} color={PASTEL.btnBlue} />
+                </TouchableOpacity>
+
+                <TouchableOpacity onPress={closeMealModal} style={s.modalCancel}>
+                  <Text style={s.modalCancelText}>Cancel</Text>
+                </TouchableOpacity>
+              </>
+            )}
+
+            {/* Log Meal Mode */}
+            {mealMode === 'log' && (
+              <>
+                <View style={s.modalHeader}>
+                  <TouchableOpacity onPress={() => setMealMode('select')}>
+                    <Ionicons name="arrow-back" size={24} color="#FFF" />
+                  </TouchableOpacity>
+                  <Text style={[s.modalTitle, { flex: 1, marginLeft: 12, marginBottom: 0 }]}>Log a Meal</Text>
+                </View>
+                <Text style={s.modalSub}>Describe what you ate — AI will analyze the nutrients!</Text>
+                <TextInput
+                  style={s.modalInput}
+                  placeholder="e.g. Paneer tikka with naan, 2 rotis with dal"
+                  placeholderTextColor="#888"
+                  value={mealInput}
+                  onChangeText={setMealInput}
+                  multiline
+                />
+                <TouchableOpacity 
+                  style={[s.modalBtn, isAnalyzing && { opacity: 0.6 }]} 
+                  onPress={handleAnalyzeMeal} 
+                  disabled={isAnalyzing || !mealInput.trim()}
+                >
+                  {isAnalyzing ? <ActivityIndicator color="#000" /> : <Text style={s.modalBtnText}>Analyze Nutrition 📊</Text>}
+                </TouchableOpacity>
+                <TouchableOpacity onPress={closeMealModal} style={s.modalCancel}>
+                  <Text style={s.modalCancelText}>Cancel</Text>
+                </TouchableOpacity>
+              </>
+            )}
+
+            {/* Nutrition Preview Mode */}
+            {mealMode === 'preview' && nutritionPreview && (
+              <>
+                <View style={s.modalHeader}>
+                  <TouchableOpacity onPress={() => setMealMode('log')}>
+                    <Ionicons name="arrow-back" size={24} color="#FFF" />
+                  </TouchableOpacity>
+                  <Text style={[s.modalTitle, { flex: 1, marginLeft: 12, marginBottom: 0 }]}>Nutrition Preview</Text>
+                </View>
+                <Text style={s.modalSub}>Review before logging to your plant:</Text>
+                
+                <View style={s.nutritionCard}>
+                  <Text style={s.nutritionName}>{nutritionPreview.name}</Text>
+                  
+                  <View style={s.nutritionGrid}>
+                    <View style={s.nutritionItem}>
+                      <Text style={s.nutritionValue}>{nutritionPreview.calories}</Text>
+                      <Text style={s.nutritionLabel}>Calories</Text>
+                    </View>
+                    <View style={s.nutritionItem}>
+                      <Text style={[s.nutritionValue, { color: '#FF6B6B' }]}>{nutritionPreview.protein}g</Text>
+                      <Text style={s.nutritionLabel}>Protein</Text>
+                    </View>
+                    <View style={s.nutritionItem}>
+                      <Text style={[s.nutritionValue, { color: '#FFD93D' }]}>{nutritionPreview.carbs}g</Text>
+                      <Text style={s.nutritionLabel}>Carbs</Text>
+                    </View>
+                    <View style={s.nutritionItem}>
+                      <Text style={[s.nutritionValue, { color: '#74B9FF' }]}>{nutritionPreview.fats}g</Text>
+                      <Text style={s.nutritionLabel}>Fats</Text>
+                    </View>
+                  </View>
+                </View>
+
+                <TouchableOpacity style={s.modalBtn} onPress={handleConfirmMeal}>
+                  <Text style={s.modalBtnText}>Confirm & Feed Plant 🌱</Text>
+                </TouchableOpacity>
+                <TouchableOpacity onPress={() => setMealMode('log')} style={s.modalCancel}>
+                  <Text style={s.modalCancelText}>Edit Meal</Text>
+                </TouchableOpacity>
+              </>
+            )}
+
+            {/* Plan Meal Mode */}
+            {mealMode === 'plan' && (
+              <ScrollView showsVerticalScrollIndicator={false}>
+                <View style={s.modalHeader}>
+                  <TouchableOpacity onPress={() => setMealMode('select')}>
+                    <Ionicons name="arrow-back" size={24} color="#FFF" />
+                  </TouchableOpacity>
+                  <Text style={[s.modalTitle, { flex: 1, marginLeft: 12, marginBottom: 0 }]}>Plan Your Meal</Text>
+                </View>
+                <Text style={s.modalSub}>Enter ingredients you have — get quick Indian recipes!</Text>
+                
+                {/* Meal Type Selection */}
+                <Text style={[s.modalSub, { marginTop: 12, color: '#FFF', fontWeight: '600' }]}>Meal Type:</Text>
+                <View style={s.mealTypeRow}>
+                  {(['breakfast', 'lunch', 'dinner', 'snack'] as const).map((type) => (
+                    <TouchableOpacity
+                      key={type}
+                      style={[s.mealTypeBtn, mealTypeSelection === type && s.mealTypeBtnActive]}
+                      onPress={() => setMealTypeSelection(type)}
+                    >
+                      <Text style={[s.mealTypeText, mealTypeSelection === type && s.mealTypeTextActive]}>
+                        {type.charAt(0).toUpperCase() + type.slice(1)}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+
+                <Text style={[s.modalSub, { marginTop: 16, color: '#FFF', fontWeight: '600' }]}>Pantry Ingredients:</Text>
+                <TextInput
+                  style={[s.modalInput, { minHeight: 80 }]}
+                  placeholder="e.g. rice, dal, potatoes, onion, tomatoes, eggs, paneer..."
+                  placeholderTextColor="#888"
+                  value={ingredientInput}
+                  onChangeText={setIngredientInput}
+                  multiline
+                />
+                <Text style={[s.modalSub, { fontSize: 11, marginTop: -4 }]}>
+                  Basic spices (salt, turmeric, cumin, etc.) are assumed available
+                </Text>
+
+                <TouchableOpacity 
+                  style={[s.modalBtn, isGeneratingRecipes && { opacity: 0.6 }]} 
+                  onPress={handleGenerateRecipes} 
+                  disabled={isGeneratingRecipes || !ingredientInput.trim()}
+                >
+                  {isGeneratingRecipes ? <ActivityIndicator color="#000" /> : <Text style={s.modalBtnText}>Generate Recipes 🍳</Text>}
+                </TouchableOpacity>
+                <TouchableOpacity onPress={closeMealModal} style={s.modalCancel}>
+                  <Text style={s.modalCancelText}>Cancel</Text>
+                </TouchableOpacity>
+              </ScrollView>
+            )}
+
+            {/* Recipes Display Mode */}
+            {mealMode === 'recipes' && (
+              <ScrollView showsVerticalScrollIndicator={false}>
+                <View style={s.modalHeader}>
+                  <TouchableOpacity onPress={() => setMealMode('plan')}>
+                    <Ionicons name="arrow-back" size={24} color="#FFF" />
+                  </TouchableOpacity>
+                  <Text style={[s.modalTitle, { flex: 1, marginLeft: 12, marginBottom: 0 }]}>Quick Recipes</Text>
+                </View>
+                <Text style={s.modalSub}>Here are some quick recipes with your ingredients!</Text>
+                
+                {pantryRecipes.map((recipe: any, index: number) => (
+                  <View key={index} style={s.recipeCard}>
+                    <View style={s.recipeHeader}>
+                      <View style={{ flex: 1 }}>
+                        <Text style={s.recipeName}>{recipe.name}</Text>
+                        <Text style={s.recipeTime}>⏱️ {recipe.time_minutes} mins</Text>
+                      </View>
+                      <View style={s.recipeCuisineBadge}>
+                        <Text style={s.recipeCuisineText}>{recipe.cuisine}</Text>
+                      </View>
+                    </View>
+                    
+                    <Text style={s.recipeIngredientsTitle}>Ingredients:</Text>
+                    <Text style={s.recipeIngredients}>{recipe.ingredients?.join(', ')}</Text>
+                    
+                    <Text style={s.recipeStepsTitle}>Steps:</Text>
+                    {recipe.steps?.map((step: string, i: number) => (
+                      <Text key={i} style={s.recipeStep}>{step}</Text>
+                    ))}
+                    
+                    {recipe.video && (
+                      <TouchableOpacity 
+                        style={s.videoBtn}
+                        onPress={() => {
+                          // Open YouTube video
+                          import('react-native').then(({ Linking }) => {
+                            Linking.openURL(recipe.video);
+                          });
+                        }}
+                      >
+                        <Ionicons name="play-circle" size={20} color="#FF0000" />
+                        <Text style={s.videoBtnText}>Watch Video</Text>
+                      </TouchableOpacity>
+                    )}
+                  </View>
+                ))}
+                
+                <TouchableOpacity onPress={closeMealModal} style={[s.modalCancel, { marginBottom: 20 }]}>
+                  <Text style={s.modalCancelText}>Close</Text>
+                </TouchableOpacity>
+              </ScrollView>
+            )}
           </View>
         </View>
       </Modal>
@@ -714,6 +1081,103 @@ export default function HomeScreen() {
               <Text style={s.modalCancelText}>Close</Text>
             </TouchableOpacity>
           </View>
+        </View>
+      </Modal>
+
+      {/* ══ WATER CAMERA MODAL ══ */}
+      <Modal visible={showWaterCamera} animationType="slide">
+        <View style={{ flex: 1, backgroundColor: '#000' }}>
+          <SafeAreaView style={{ flex: 1 }}>
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 16 }}>
+              <TouchableOpacity onPress={() => { setShowWaterCamera(false); setCapturedWaterPhoto(null); }}>
+                <Ionicons name="close" size={28} color="#FFF" />
+              </TouchableOpacity>
+              <Text style={{ color: '#FFF', fontSize: 18, fontWeight: 'bold' }}>💧 Log Water</Text>
+              <View style={{ width: 28 }} />
+            </View>
+            
+            <Text style={{ color: '#A0AEC0', textAlign: 'center', marginBottom: 12, paddingHorizontal: 20 }}>
+              Take a photo of your water bottle or glass to log your hydration!
+            </Text>
+
+            {capturedWaterPhoto ? (
+              <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', padding: 20 }}>
+                <View style={{ borderRadius: 16, overflow: 'hidden', borderWidth: 3, borderColor: PASTEL.btnBlue }}>
+                  <Image
+                    source={{ uri: capturedWaterPhoto }}
+                    style={{ width: SCREEN_W - 80, height: SCREEN_W - 80 }}
+                    resizeMode="cover"
+                  />
+                </View>
+                {verifyingWater && (
+                  <View style={{ marginTop: 16, alignItems: 'center' }}>
+                    <ActivityIndicator size="small" color={PASTEL.btnBlue} />
+                    <Text style={{ color: '#A0AEC0', marginTop: 8, fontSize: 13 }}>
+                      🔍 AI verifying water...
+                    </Text>
+                  </View>
+                )}
+                <View style={{ flexDirection: 'row', gap: 16, marginTop: 24 }}>
+                  <TouchableOpacity
+                    style={{ 
+                      backgroundColor: 'rgba(255,255,255,0.1)', 
+                      paddingVertical: 14, 
+                      paddingHorizontal: 28, 
+                      borderRadius: 12,
+                      opacity: verifyingWater ? 0.5 : 1 
+                    }}
+                    onPress={() => setCapturedWaterPhoto(null)}
+                    disabled={verifyingWater}
+                  >
+                    <Text style={{ color: '#FFF', fontWeight: '600' }}>Retake</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={{ 
+                      backgroundColor: PASTEL.btnBlue, 
+                      paddingVertical: 14, 
+                      paddingHorizontal: 28, 
+                      borderRadius: 12,
+                      opacity: verifyingWater ? 0.7 : 1,
+                      flexDirection: 'row',
+                      alignItems: 'center',
+                      gap: 8
+                    }}
+                    onPress={confirmWaterLog}
+                    disabled={verifyingWater}
+                  >
+                    {verifyingWater ? (
+                      <ActivityIndicator size="small" color="#FFF" />
+                    ) : null}
+                    <Text style={{ color: '#FFF', fontWeight: 'bold' }}>
+                      {verifyingWater ? 'Verifying...' : '✓ Log Water'}
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            ) : (
+              <View style={{ flex: 1 }}>
+                <CameraView
+                  ref={cameraRef}
+                  style={{ flex: 1, marginHorizontal: 20, borderRadius: 16, overflow: 'hidden' }}
+                  facing="back"
+                />
+                <View style={{ alignItems: 'center', paddingVertical: 24 }}>
+                  <TouchableOpacity
+                    onPress={takeWaterPhoto}
+                    style={{
+                      width: 72, height: 72, borderRadius: 36,
+                      backgroundColor: PASTEL.btnBlue,
+                      alignItems: 'center', justifyContent: 'center',
+                      borderWidth: 4, borderColor: '#FFF',
+                    }}
+                  >
+                    <Ionicons name="water" size={32} color="#FFF" />
+                  </TouchableOpacity>
+                  <Text style={{ color: '#A0AEC0', marginTop: 10, fontSize: 12 }}>Tap to capture</Text>
+                </View>
+              </View>
+            )}
+          </SafeAreaView>
         </View>
       </Modal>
     </View>
@@ -872,4 +1336,86 @@ const s = StyleSheet.create({
   goalCheckDone: { backgroundColor: PASTEL.mint, borderColor: PASTEL.mint },
   goalText: { flex: 1, color: '#FFF', fontSize: 14, fontWeight: '500' },
   goalTextDone: { textDecorationLine: 'line-through', color: '#A0AEC0' },
+
+  // Meal Modal - Mode Selection
+  modalHeader: { flexDirection: 'row', alignItems: 'center', marginBottom: 16 },
+  mealOptionBtn: { 
+    flexDirection: 'row', 
+    alignItems: 'center', 
+    padding: 16, 
+    borderRadius: 14, 
+    borderWidth: 1.5, 
+    marginBottom: 12 
+  },
+  mealOptionTitle: { color: '#FFF', fontSize: 16, fontWeight: 'bold', marginBottom: 2 },
+  mealOptionDesc: { color: '#A0AEC0', fontSize: 12 },
+  
+  // Meal Type Selection
+  mealTypeRow: { flexDirection: 'row', gap: 8, marginTop: 8 },
+  mealTypeBtn: { 
+    flex: 1, 
+    paddingVertical: 10, 
+    backgroundColor: 'rgba(255,255,255,0.08)', 
+    borderRadius: 10, 
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: 'transparent',
+  },
+  mealTypeBtnActive: { 
+    backgroundColor: 'rgba(85,239,196,0.15)', 
+    borderColor: PASTEL.mint,
+  },
+  mealTypeText: { color: '#A0AEC0', fontSize: 12, fontWeight: '600' },
+  mealTypeTextActive: { color: PASTEL.mint },
+
+  // Nutrition Preview Card
+  nutritionCard: {
+    backgroundColor: 'rgba(255,255,255,0.06)',
+    borderRadius: 16,
+    padding: 16,
+    marginVertical: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.1)',
+  },
+  nutritionName: { color: '#FFF', fontSize: 16, fontWeight: 'bold', marginBottom: 12, textAlign: 'center' },
+  nutritionGrid: { flexDirection: 'row', justifyContent: 'space-around' },
+  nutritionItem: { alignItems: 'center' },
+  nutritionValue: { color: PASTEL.mint, fontSize: 24, fontWeight: 'bold' },
+  nutritionLabel: { color: '#A0AEC0', fontSize: 11, marginTop: 4 },
+
+  // Recipe Card
+  recipeCard: {
+    backgroundColor: 'rgba(255,255,255,0.06)',
+    borderRadius: 14,
+    padding: 16,
+    marginBottom: 14,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.1)',
+  },
+  recipeHeader: { flexDirection: 'row', alignItems: 'flex-start', marginBottom: 12 },
+  recipeName: { color: '#FFF', fontSize: 16, fontWeight: 'bold' },
+  recipeTime: { color: '#A0AEC0', fontSize: 12, marginTop: 4 },
+  recipeCuisineBadge: { 
+    backgroundColor: 'rgba(129,236,236,0.2)', 
+    paddingHorizontal: 10, 
+    paddingVertical: 4, 
+    borderRadius: 20 
+  },
+  recipeCuisineText: { color: PASTEL.mint, fontSize: 11, fontWeight: '600' },
+  recipeIngredientsTitle: { color: PASTEL.btnBlue, fontSize: 12, fontWeight: 'bold', marginBottom: 4 },
+  recipeIngredients: { color: '#A0AEC0', fontSize: 12, lineHeight: 18, marginBottom: 12 },
+  recipeStepsTitle: { color: PASTEL.btnBlue, fontSize: 12, fontWeight: 'bold', marginBottom: 6 },
+  recipeStep: { color: '#D0D0D0', fontSize: 13, lineHeight: 20, marginBottom: 6 },
+  videoBtn: { 
+    flexDirection: 'row', 
+    alignItems: 'center', 
+    backgroundColor: 'rgba(255,0,0,0.1)', 
+    paddingVertical: 10, 
+    paddingHorizontal: 14, 
+    borderRadius: 10,
+    alignSelf: 'flex-start',
+    marginTop: 8,
+    gap: 8,
+  },
+  videoBtnText: { color: '#FF6B6B', fontSize: 13, fontWeight: '600' },
 });

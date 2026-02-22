@@ -1,13 +1,15 @@
 import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { CameraView, useCameraPermissions } from 'expo-camera';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Link, useRouter } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
-import React, { useContext, useEffect, useState } from 'react';
+import React, { useContext, useEffect, useRef, useState } from 'react';
 import {
     ActivityIndicator,
     Alert,
     Dimensions,
+    Image,
     Modal,
     Platform,
     Pressable,
@@ -33,8 +35,9 @@ import { LPColors } from '../../constants/theme';
 import { AuthContext } from '../../context/AuthContext';
 import { useGoals } from '../../context/GoalsContext';
 import { useSteps } from '../../context/StepsContext';
-import { analyzeFoodApi } from '../../services/api';
+import { analyzeFoodApi, verifyWaterImageApi } from '../../services/api';
 import { LPHaptics } from '../../services/haptics';
+import * as FileSystem from 'expo-file-system';
 
 const { width: SCREEN_W } = Dimensions.get('window');
 const PAD = 16;
@@ -47,18 +50,14 @@ const PASTEL = {
     soil: '#5C4033', darkGreen: '#2D6A4F',
 };
 
-// ── Plant Stage (0-4) ──
-// Each action contributes to a 100-point score:
-//   Water: 3 pts each, max 24 (8 glasses)
-//   Meals: 10 pts each, max 30 (3 meals)
-//   Goals: up to 30 pts based on completion ratio
-//   Smoke: -12 pts per cigarette
-const getPlantStage = (water: number, done: number, total: number, smoked: number, mealsCount: number) => {
+// ── Plant Stage (0-4) for NON-SMOKERS ──
+// No smoke penalty - focused on healthy habits
+const getPlantStage = (water: number, done: number, total: number, mealsCount: number, steps: number) => {
     let score = 0;
-    score += Math.min(water, 8) * 3;          // max 24
-    score += Math.min(mealsCount, 3) * 10;     // max 30
-    if (total > 0) score += (done / total) * 30; // max 30
-    score -= smoked * 12;
+    score += Math.min(water, 8) * 4;          // max 32
+    score += Math.min(mealsCount, 3) * 12;    // max 36
+    if (total > 0) score += (done / total) * 20; // max 20
+    score += Math.min(steps / 1000, 12);      // max 12 for 10k+ steps
     score = Math.max(0, Math.min(100, score));
     if (score >= 70) return 4;  // Full tree
     if (score >= 45) return 3;  // Bush
@@ -109,9 +108,8 @@ export default function FitnessHomeScreen() {
 
     const [refreshing, setRefreshing] = useState(false);
 
-    // Modals
+    // Modals (no smoke modal for non-smokers)
     const [showMeal, setShowMeal] = useState(false);
-    const [showSmoke, setShowSmoke] = useState(false);
     const [showGoals, setShowGoals] = useState(false);
     const [showBMI, setShowBMI] = useState(false);
 
@@ -121,8 +119,12 @@ export default function FitnessHomeScreen() {
     const [isAnalyzing, setIsAnalyzing] = useState(false);
     const [meals, setMeals] = useState<any[]>([]);
 
-    // Smoke
+    // Remove smoking tracking for solo non-smoker
     const [smokesToday, setSmokesToday] = useState(0);
+    // Determine if smoking features should be shown
+    const isSmoker = auth?.user?.isSmoker === true;
+    const inDuoWithSmoker = auth?.user?.appMode === 'duo' && auth?.user?.duoPartnerIsSmoker === true;
+    const showSmokingFeatures = isSmoker || inDuoWithSmoker;
 
     // BMI
     const [height, setHeight] = useState('');
@@ -136,13 +138,19 @@ export default function FitnessHomeScreen() {
     const [sportGoals, setSportGoals] = useState<any[]>([]);
     const [sportError, setSportError] = useState('');
 
-    // Animations
+    // Animations (no smoke animation for non-smokers)
     const [waterAnim, setWaterAnim] = useState(false);
-    const [smokeAnim, setSmokeAnim] = useState(false);
     const [sparkle, setSparkle] = useState(false);
 
+    // Water photo camera
+    const [showWaterCamera, setShowWaterCamera] = useState(false);
+    const [cameraPermission, requestCameraPermission] = useCameraPermissions();
+    const cameraRef = useRef<any>(null);
+    const [capturedWaterPhoto, setCapturedWaterPhoto] = useState<string | null>(null);
+    const [verifyingWater, setVerifyingWater] = useState(false);
+
     const completedGoals = goals.filter((g: any) => g.completed).length;
-    const localPlantStage = getPlantStage(waterIntake, completedGoals, goals.length, smokesToday, meals.length);
+    const localPlantStage = getPlantStage(waterIntake, completedGoals, goals.length, meals.length, currentSteps);
 
     // Duo sync: use shared plant stage when in active duo
     const [duoPlantStage, setDuoPlantStage] = useState<number | null>(null);
@@ -151,12 +159,8 @@ export default function FitnessHomeScreen() {
     // ── Load persisted data ──
     useEffect(() => {
         (async () => {
-            // Smokes
+            // Meals only (no smoke tracking for non-smokers)
             const today = new Date().toDateString();
-            const sd = await AsyncStorage.getItem('@daily_smokes_date');
-            if (sd !== today) { setSmokesToday(0); await AsyncStorage.setItem('@daily_smokes_date', today); await AsyncStorage.setItem('@daily_smokes', '0'); }
-            else { const v = await AsyncStorage.getItem('@daily_smokes'); if (v) setSmokesToday(parseInt(v)); }
-            // Meals
             const md = await AsyncStorage.getItem('@daily_date');
             if (md === today) { const m = await AsyncStorage.getItem('@daily_meals'); if (m) setMeals(JSON.parse(m)); }
             // BMI
@@ -228,11 +232,88 @@ export default function FitnessHomeScreen() {
         LPHaptics.success(); setShowBMI(false);
     };
 
-    // Water
-    const handleWater = () => {
-        updateWaterIntake(waterIntake + 1);
-        setWaterAnim(true); setTimeout(() => setWaterAnim(false), 3500);
-        LPHaptics.success();
+    // Water - requires photo proof
+    const openWaterCamera = async () => {
+        if (!cameraPermission?.granted) {
+            const result = await requestCameraPermission();
+            if (!result.granted) {
+                Alert.alert('Camera Required', 'Please allow camera access to log water intake with a photo.');
+                return;
+            }
+        }
+        setCapturedWaterPhoto(null);
+        setShowWaterCamera(true);
+    };
+
+    const takeWaterPhoto = async () => {
+        if (cameraRef.current) {
+            try {
+                const photo = await cameraRef.current.takePictureAsync({ quality: 0.5 });
+                setCapturedWaterPhoto(photo.uri);
+                LPHaptics.success();
+            } catch (e) {
+                LPHaptics.error();
+                Alert.alert('Error', 'Failed to take photo');
+            }
+        }
+    };
+
+    const confirmWaterLog = async () => {
+        if (!capturedWaterPhoto) return;
+
+        setVerifyingWater(true);
+        try {
+            // Read the image and convert to base64
+            const base64 = await FileSystem.readAsStringAsync(capturedWaterPhoto, {
+                encoding: FileSystem.EncodingType.Base64,
+            });
+
+            // Verify with AI
+            const response = await verifyWaterImageApi(`data:image/jpeg;base64,${base64}`);
+            const { isWater, confidence, reason } = response.data;
+
+            if (isWater && confidence >= 50) {
+                // Water verified - log it
+                updateWaterIntake(waterIntake + 1);
+                setWaterAnim(true);
+                setTimeout(() => setWaterAnim(false), 3500);
+                LPHaptics.success();
+                setShowWaterCamera(false);
+                setCapturedWaterPhoto(null);
+                Alert.alert('💧 Hydrated!', `Water logged! ${confidence >= 80 ? '✨ Perfect shot!' : ''}`);
+            } else {
+                // Not water - reject
+                LPHaptics.error();
+                Alert.alert(
+                    '❌ Not Water Detected',
+                    reason || 'Please take a clear photo of your water bottle or glass of water.',
+                    [{ text: 'Try Again', onPress: () => setCapturedWaterPhoto(null) }]
+                );
+            }
+        } catch (error) {
+            console.log('Water verification error:', error);
+            // On network error, allow with warning
+            Alert.alert(
+                '⚠️ Verification Unavailable',
+                'Could not verify the image. Please make sure this is actually water.',
+                [
+                    { text: 'Cancel', style: 'cancel' },
+                    {
+                        text: 'Log Anyway',
+                        onPress: () => {
+                            updateWaterIntake(waterIntake + 1);
+                            setWaterAnim(true);
+                            setTimeout(() => setWaterAnim(false), 3500);
+                            LPHaptics.success();
+                            setShowWaterCamera(false);
+                            setCapturedWaterPhoto(null);
+                        }
+                    }
+                ]
+            );
+        } finally {
+            setVerifyingWater(false);
+        }
     };
 
     // Smoke
@@ -317,7 +398,7 @@ export default function FitnessHomeScreen() {
                         {/* Screen */}
                         <View style={st.bezel}>
                             <View style={st.screen}>
-                                <GameGarden width={GW} height={GH} plantStage={plantStage} waterAnim={waterAnim} smokeAnim={smokeAnim} sparkleAnim={sparkle} />
+                                <GameGarden width={GW} height={GH} plantStage={plantStage} waterAnim={waterAnim} smokeAnim={false} sparkleAnim={sparkle} />
                                 <View style={st.hud}>
                                     <View style={st.hudI}><Ionicons name="flame" size={12} color="#FF6B6B" /><Text style={st.hudT}>{streak}d</Text></View>
                                     <View style={st.hudI}><Ionicons name="footsteps" size={12} color="#FFF" /><Text style={st.hudT}>{currentSteps}</Text></View>
@@ -334,9 +415,8 @@ export default function FitnessHomeScreen() {
                                 <View style={[st.dBtn, st.dDown]} />
                             </View>
                             <View style={st.btns}>
-                                <CBtn icon="water" label="Water" color={PASTEL.btnBlue} onPress={handleWater} badge={waterIntake} />
+                                <CBtn icon="water" label="Water" color={PASTEL.btnBlue} onPress={openWaterCamera} badge={waterIntake} />
                                 <CBtn icon="restaurant" label="Meal" color={PASTEL.btnGreen} onPress={() => setShowMeal(true)} badge={meals.length} />
-                                <CBtn icon="cloud" label="Smoke" color={PASTEL.btnRed} onPress={() => setShowSmoke(true)} badge={smokesToday} />
                                 <CBtn icon="trophy" label="Goals" color={PASTEL.btnYellow} onPress={() => setShowGoals(true)} badge={completedGoals} />
                             </View>
                         </View>
@@ -354,7 +434,9 @@ export default function FitnessHomeScreen() {
                         <View style={st.cartLabel}><Text style={st.cartLabelT}>STATUS</Text></View>
                         <Meter label="Water" value={waterIntake} max={8} color={PASTEL.btnBlue} icon="water" />
                         <Meter label="Meals" value={meals.length} max={4} color={PASTEL.btnGreen} icon="nutrition" />
-                        <Meter label="Shield" value={Math.max(0, 5 - smokesToday)} max={5} color={PASTEL.btnRed} icon="shield-checkmark" />
+                        {showSmokingFeatures && (
+                            <Meter label="Shield" value={Math.max(0, 5 - smokesToday)} max={5} color={PASTEL.btnRed} icon="shield-checkmark" />
+                        )}
                         <Meter label="Goals" value={completedGoals} max={goals.length || 1} color={PASTEL.btnYellow} icon="trophy" />
                         <Meter label="Steps" value={Math.min(currentSteps, 10000)} max={10000} color="#A8E6CF" icon="footsteps" />
                         <Meter label="Energy" value={Math.min(caloriesBurnt, 500)} max={500} color="#FFB7B2" icon="flame" />
@@ -447,20 +529,22 @@ export default function FitnessHomeScreen() {
             </Modal>
 
             {/* ══ SMOKE MODAL ══ */}
-            <Modal visible={showSmoke} transparent animationType="slide">
-                <View style={st.mo}><View style={st.mc}>
-                    <Text style={st.mT}>🚬 Smoke Tracker</Text>
-                    <Text style={st.mS}>Each cigarette harms your plant. Be honest.</Text>
-                    <View style={{ alignItems: 'center', marginVertical: 20 }}>
-                        <Text style={{ color: '#999', fontSize: 13 }}>Today's count</Text>
-                        <Text style={{ color: PASTEL.btnRed, fontSize: 48, fontWeight: 'bold' }}>{smokesToday}</Text>
-                    </View>
-                    <View style={{ flexDirection: 'row', justifyContent: 'center', gap: 16, marginBottom: 10 }}>
-                        {[1, 2, 3].map(n => <TouchableOpacity key={n} style={st.smkBtn} onPress={() => addSmoke(n)}><Text style={st.smkT}>+{n}</Text></TouchableOpacity>)}
-                    </View>
-                    <TouchableOpacity onPress={() => setShowSmoke(false)} style={st.mCancel}><Text style={st.mCancelT}>Close</Text></TouchableOpacity>
-                </View></View>
-            </Modal>
+            {showSmokingFeatures && (
+                <Modal visible={showSmoke} transparent animationType="slide">
+                    <View style={st.mo}><View style={st.mc}>
+                        <Text style={st.mT}>🚬 Smoke Tracker</Text>
+                        <Text style={st.mS}>Each cigarette harms your plant. Be honest.</Text>
+                        <View style={{ alignItems: 'center', marginVertical: 20 }}>
+                            <Text style={{ color: '#999', fontSize: 13 }}>Today's count</Text>
+                            <Text style={{ color: PASTEL.btnRed, fontSize: 48, fontWeight: 'bold' }}>{smokesToday}</Text>
+                        </View>
+                        <View style={{ flexDirection: 'row', justifyContent: 'center', gap: 16, marginBottom: 10 }}>
+                            {[1, 2, 3].map(n => <TouchableOpacity key={n} style={st.smkBtn} onPress={() => addSmoke(n)}><Text style={st.smkT}>+{n}</Text></TouchableOpacity>)}
+                        </View>
+                        <TouchableOpacity onPress={() => setShowSmoke(false)} style={st.mCancel}><Text style={st.mCancelT}>Close</Text></TouchableOpacity>
+                    </View></View>
+                </Modal>
+            )}
 
             {/* ══ GOALS MODAL ══ */}
             <Modal visible={showGoals} transparent animationType="slide">
@@ -506,6 +590,103 @@ export default function FitnessHomeScreen() {
                         ))}
                     </View>
                 </View></View>
+            </Modal>
+
+            {/* ══ WATER CAMERA MODAL ══ */}
+            <Modal visible={showWaterCamera} animationType="slide">
+                <View style={{ flex: 1, backgroundColor: '#000' }}>
+                    <SafeAreaView style={{ flex: 1 }}>
+                        <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 16 }}>
+                            <TouchableOpacity onPress={() => { setShowWaterCamera(false); setCapturedWaterPhoto(null); }}>
+                                <Ionicons name="close" size={28} color="#FFF" />
+                            </TouchableOpacity>
+                            <Text style={{ color: '#FFF', fontSize: 18, fontWeight: 'bold' }}>💧 Log Water</Text>
+                            <View style={{ width: 28 }} />
+                        </View>
+
+                        <Text style={{ color: '#A0AEC0', textAlign: 'center', marginBottom: 12, paddingHorizontal: 20 }}>
+                            Take a photo of your water bottle or glass to log your hydration!
+                        </Text>
+
+                        {capturedWaterPhoto ? (
+                            <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', padding: 20 }}>
+                                <View style={{ borderRadius: 16, overflow: 'hidden', borderWidth: 3, borderColor: PASTEL.btnBlue }}>
+                                    <Image
+                                        source={{ uri: capturedWaterPhoto }}
+                                        style={{ width: SCREEN_W - 80, height: SCREEN_W - 80 }}
+                                        resizeMode="cover"
+                                    />
+                                </View>
+                                {verifyingWater && (
+                                    <View style={{ marginTop: 16, alignItems: 'center' }}>
+                                        <ActivityIndicator size="small" color={PASTEL.btnBlue} />
+                                        <Text style={{ color: '#A0AEC0', marginTop: 8, fontSize: 13 }}>
+                                            🔍 AI verifying water...
+                                        </Text>
+                                    </View>
+                                )}
+                                <View style={{ flexDirection: 'row', gap: 16, marginTop: 24 }}>
+                                    <TouchableOpacity
+                                        style={{
+                                            backgroundColor: 'rgba(255,255,255,0.1)',
+                                            paddingVertical: 14,
+                                            paddingHorizontal: 28,
+                                            borderRadius: 12,
+                                            opacity: verifyingWater ? 0.5 : 1
+                                        }}
+                                        onPress={() => setCapturedWaterPhoto(null)}
+                                        disabled={verifyingWater}
+                                    >
+                                        <Text style={{ color: '#FFF', fontWeight: '600' }}>Retake</Text>
+                                    </TouchableOpacity>
+                                    <TouchableOpacity
+                                        style={{
+                                            backgroundColor: PASTEL.btnBlue,
+                                            paddingVertical: 14,
+                                            paddingHorizontal: 28,
+                                            borderRadius: 12,
+                                            opacity: verifyingWater ? 0.7 : 1,
+                                            flexDirection: 'row',
+                                            alignItems: 'center',
+                                            gap: 8
+                                        }}
+                                        onPress={confirmWaterLog}
+                                        disabled={verifyingWater}
+                                    >
+                                        {verifyingWater ? (
+                                            <ActivityIndicator size="small" color="#FFF" />
+                                        ) : null}
+                                        <Text style={{ color: '#FFF', fontWeight: 'bold' }}>
+                                            {verifyingWater ? 'Verifying...' : '✓ Log Water'}
+                                        </Text>
+                                    </TouchableOpacity>
+                                </View>
+                            </View>
+                        ) : (
+                            <View style={{ flex: 1 }}>
+                                <CameraView
+                                    ref={cameraRef}
+                                    style={{ flex: 1, marginHorizontal: 20, borderRadius: 16, overflow: 'hidden' }}
+                                    facing="back"
+                                />
+                                <View style={{ alignItems: 'center', paddingVertical: 24 }}>
+                                    <TouchableOpacity
+                                        onPress={takeWaterPhoto}
+                                        style={{
+                                            width: 72, height: 72, borderRadius: 36,
+                                            backgroundColor: PASTEL.btnBlue,
+                                            alignItems: 'center', justifyContent: 'center',
+                                            borderWidth: 4, borderColor: '#FFF',
+                                        }}
+                                    >
+                                        <Ionicons name="water" size={32} color="#FFF" />
+                                    </TouchableOpacity>
+                                    <Text style={{ color: '#A0AEC0', marginTop: 10, fontSize: 12 }}>Tap to capture</Text>
+                                </View>
+                            </View>
+                        )}
+                    </SafeAreaView>
+                </View>
             </Modal>
         </View>
     );

@@ -64,11 +64,14 @@ export async function requestPermissions(): Promise<boolean> {
       return false;
     }
 
-    const { status: backgroundStatus } =
-      await Location.requestBackgroundPermissionsAsync();
-    if (backgroundStatus !== "granted") {
-      console.log("Background location permission denied");
-      return false;
+    try {
+      const { status: backgroundStatus } =
+        await Location.requestBackgroundPermissionsAsync();
+      if (backgroundStatus !== "granted") {
+        console.log("Background location permission denied - geofencing may only work while app is open.");
+      }
+    } catch (bgErr) {
+      console.log("Failed to request background permission:", bgErr);
     }
 
     const { status: notificationStatus } =

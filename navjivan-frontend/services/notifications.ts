@@ -1,10 +1,19 @@
 import * as Device from 'expo-device';
-import * as Notifications from 'expo-notifications';
 import { Platform } from 'react-native';
+import Constants, { ExecutionEnvironment } from 'expo-constants';
 import API from './api';
 
 export const registerForPushNotificationsAsync = async () => {
     let token;
+
+    const isExpoGo = Constants.executionEnvironment === ExecutionEnvironment.StoreClient;
+    if (isExpoGo) {
+        console.log('[Push] Running in Expo Go - skipping push notification setup');
+        return null;
+    }
+
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const Notifications = require('expo-notifications');
 
     if (Platform.OS === 'android') {
         await Notifications.setNotificationChannelAsync('default', {

@@ -13,6 +13,7 @@ import {
 } from "react-native";
 import Animated, { FadeInDown } from "react-native-reanimated";
 import { SafeAreaView } from "react-native-safe-area-context";
+import HealthSyncSettings from "../../components/HealthSyncSettings";
 import { LPColors } from "../../constants/theme";
 import { AuthContext } from "../../context/AuthContext";
 import { fetchDashboardSummary } from "../../services/api";
@@ -272,6 +273,14 @@ export default function ProfileScreen() {
           {}
           <Animated.View
             entering={FadeInDown.delay(500).duration(500)}
+            style={{ paddingHorizontal: 16 }}
+          >
+            <HealthSyncSettings />
+          </Animated.View>
+
+          {}
+          <Animated.View
+            entering={FadeInDown.delay(550).duration(500)}
             style={styles.settingsContainer}
           >
             {settings.map((item, index) => (

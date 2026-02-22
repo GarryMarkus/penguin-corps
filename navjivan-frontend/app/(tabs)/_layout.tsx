@@ -68,6 +68,19 @@ export default function TabLayout() {
         }}
       />
       <Tabs.Screen
+        name="partner"
+        options={{
+          title: 'Partner',
+          tabBarIcon: ({ color, focused }) => (
+            <Ionicons
+              name={focused ? 'heart' : 'heart-outline'}
+              size={24}
+              color={color}
+            />
+          ),
+        }}
+      />
+      <Tabs.Screen
         name="explore"
         options={{
           title: 'Community',

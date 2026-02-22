@@ -244,13 +244,28 @@ export default function QuestionnaireScreen() {
   const auth: any = useContext(AuthContext);
   const params = useLocalSearchParams();
 
-  const [phase, setPhase] = useState<QuestionPhase>("smoker-check");
+  // Determine initial phase based on whether isSmoker is already known
+  const getInitialPhase = (): QuestionPhase => {
+    // If user already has isSmoker set (came from Solo flow via smoker-check)
+    if (auth.user?.isSmoker === true) {
+      return "smoking"; // Go straight to smoking questions
+    } else if (auth.user?.isSmoker === false) {
+      return "health"; // Go straight to health questions
+    }
+    // For Duo mode or new users, show smoker-check question first
+    return "smoker-check";
+  };
+
+  const [phase, setPhase] = useState<QuestionPhase>(getInitialPhase());
   const [currentStep, setCurrentStep] = useState(0);
   const [healthAnswers, setHealthAnswers] = useState<Partial<HealthData>>({});
   const [smokingAnswers, setSmokingAnswers] = useState<Partial<SmokingData>>(
     {},
   );
-  const [isSmoker, setIsSmoker] = useState<boolean | null>(null);
+  // Initialize isSmoker from auth.user if already set
+  const [isSmoker, setIsSmoker] = useState<boolean | null>(
+    auth.user?.isSmoker ?? null
+  );
   const [recommendation, setRecommendation] = useState<AIRecommendation | null>(
     null,
   );
@@ -292,9 +307,20 @@ export default function QuestionnaireScreen() {
 
   const progress = (getCurrentStepNumber() / getTotalSteps()) * 100;
 
-  const handleSmokerAnswer = (answer: string) => {
+  const handleSmokerAnswer = async (answer: string) => {
     const userIsSmoker = answer === "Quit Smoking & Rebuild My Health";
     setIsSmoker(userIsSmoker);
+
+    // Update server with smoker status (for Duo mode where it wasn't set earlier)
+    if (auth.user && auth.user.isSmoker === undefined) {
+      try {
+        await API.post('/api/users/update-smoker-status', { isSmoker: userIsSmoker });
+        // Update local auth state
+        await auth.loginUser({ ...auth.user, isSmoker: userIsSmoker }, auth.token);
+      } catch (err) {
+        console.error('[Questionnaire] Failed to update smoker status:', err);
+      }
+    }
 
     setCurrentStep(0);
 
@@ -365,17 +391,23 @@ export default function QuestionnaireScreen() {
     if (!recommendation) return;
 
     const plan: PlanType = recommendation.smokingPlan || "gradual";
+    setIsCreatingAccount(true);
 
-    if (signupData) {
-      setIsCreatingAccount(true);
-      try {
+    try {
+      // Prepare questionnaire data to save
+      const questionnaireData = {
+        isSmoker: isSmoker,
+        fitnessLevel: recommendation.fitnessLevel,
+        plan: recommendation.smokingPlan || "none",
+        healthData: healthAnswers,
+        smokingData: smokingAnswers,
+      };
+
+      if (signupData && !auth.token) {
+        // Legacy flow: Create account with all data
         const finalSignupData = {
           ...signupData,
-          isSmoker: isSmoker,
-          fitnessLevel: recommendation.fitnessLevel,
-          plan: recommendation.smokingPlan || "none",
-          healthData: healthAnswers,
-          smokingData: smokingAnswers,
+          ...questionnaireData,
         };
 
         const res = await API.post<SignupResponse>(
@@ -383,46 +415,23 @@ export default function QuestionnaireScreen() {
           finalSignupData,
         );
         const { user, token } = res.data;
-
         await auth.loginUser(user, token);
-        setPlan(plan);
-
-        if (healthAnswers) {
-          setHealthData(healthAnswers as any);
+      } else {
+        // New flow: User already exists, update their data
+        console.log("[Questionnaire] Updating existing user with questionnaire data...");
+        await API.post("/api/users/update-questionnaire", questionnaireData);
+        
+        // Update local auth state
+        if (auth.user) {
+          await auth.loginUser(
+            { ...auth.user, ...questionnaireData },
+            auth.token
+          );
         }
-        if (recommendation.fitnessLevel) {
-          setFitnessLevel(recommendation.fitnessLevel);
-        }
-
-        console.log("[Questionnaire] Generating initial AI goals...");
-        await generateInitialGoals();
-
-        setTimeout(() => {
-          if (user.isSmoker === false) {
-            router.replace("/fitness");
-          } else {
-            router.replace("/(tabs)");
-          }
-        }, 100);
-      } catch (err: any) {
-        console.error(
-          "[Questionnaire] Signup error:",
-          err.response?.data || err.message,
-        );
-        setIsCreatingAccount(false);
-        Alert.alert(
-          "Signup Failed",
-          err.response?.data?.message ||
-            "Could not create your account. Please try again.",
-          [
-            { text: "Try Again", style: "cancel" },
-            { text: "Go Back", onPress: () => router.replace("/auth/signup") },
-          ],
-        );
       }
-    } else {
-      setPlan(plan);
 
+      // Update local goals context
+      setPlan(plan);
       if (healthAnswers) {
         setHealthData(healthAnswers as any);
       }
@@ -430,10 +439,28 @@ export default function QuestionnaireScreen() {
         setFitnessLevel(recommendation.fitnessLevel);
       }
 
-      console.log(
-        "[Questionnaire] Generating initial AI goals for existing user...",
-      );
+      console.log("[Questionnaire] Generating initial AI goals...");
       await generateInitialGoals();
+
+      // Navigate to plant selection (health sync already done in earlier step)
+      setTimeout(() => {
+        router.replace("/onboarding/plant-selection");
+      }, 100);
+    } catch (err: any) {
+      console.error(
+        "[Questionnaire] Error:",
+        err.response?.data || err.message,
+      );
+      setIsCreatingAccount(false);
+      Alert.alert(
+        "Error",
+        err.response?.data?.message ||
+          "Could not save your data. Please try again.",
+        [
+          { text: "Try Again", style: "cancel" },
+          { text: "Go Back", onPress: () => router.replace("/auth/signup") },
+        ],
+      );
     }
   };
 

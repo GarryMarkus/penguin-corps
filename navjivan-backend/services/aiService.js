@@ -575,3 +575,79 @@ Return ONLY valid JSON (no markdown, no explanation):
     };
   }
 };
+/**
+ * Verify if an image contains water (water bottle, glass of water, etc.)
+ * @param {string} imageBase64 - Base64 encoded image data
+ * @returns {Promise<Object>} - Verification result
+ */
+export const verifyWaterImageWithAI = async (imageBase64) => {
+  if (!imageBase64) throw new Error("Image data required");
+
+  const apiKey = process.env.OPENROUTER_API_KEY;
+  if (!apiKey) throw new Error("API key not configured");
+
+  try {
+    const response = await axios.post(
+      OPENROUTER_API_URL,
+      {
+        model: "google/gemini-2.0-flash-001",
+        messages: [
+          {
+            role: "user",
+            content: [
+              {
+                type: "text",
+                text: `You are a hydration verification assistant. Analyze this image and determine if it shows WATER that someone is about to drink or is drinking.
+
+Valid water sources include:
+- Water bottle (plastic, glass, or reusable)
+- Glass of water
+- Cup/mug of water
+- Water being poured
+- Person drinking water
+
+Invalid images include:
+- Random objects not related to water
+- Other beverages (soda, juice, coffee, tea, alcohol)
+- Empty containers
+- Food items
+- Blurry/unclear images
+- Water in non-drinking contexts (pools, rain, etc.)
+
+Respond with ONLY a JSON object:
+{
+  "isWater": true/false,
+  "confidence": number between 0-100,
+  "reason": "brief explanation"
+}`
+              },
+              {
+                type: "image_url",
+                image_url: {
+                  url: imageBase64.startsWith('data:') ? imageBase64 : `data:image/jpeg;base64,${imageBase64}`
+                }
+              }
+            ]
+          }
+        ],
+        response_format: { type: "json_object" }
+      },
+      {
+        headers: {
+          "Authorization": `Bearer ${apiKey}`,
+          "Content-Type": "application/json",
+          "HTTP-Referer": "https://navjivana.app",
+          "X-Title": "Navjivan App",
+        },
+        timeout: 30000,
+      }
+    );
+
+    const responseText = response.data.choices[0].message.content;
+    const cleanJson = responseText.replace(/```json/g, '').replace(/```/g, '').trim();
+    return JSON.parse(cleanJson);
+  } catch (error) {
+    console.error("Water verification error:", error.response?.data || error.message);
+    throw error;
+  }
+};

@@ -15,7 +15,7 @@ const sanitizeUser = (user) => {
 
 export const signup = async (req, res) => {
   try {
-    const { name, email, password, age, height, weight, plan, isSmoker, smokingData, healthData } = req.body;
+    const { name, email, password, age, height, weight, plan, isSmoker, smokingData, healthData, appMode } = req.body;
 
 
     if (!name || !email || !password) {
@@ -43,7 +43,8 @@ export const signup = async (req, res) => {
       plan: plan === "aggressive" ? "aggressive" : plan === "gradual" ? "gradual" : "none",
       isSmoker: isSmoker === true || isSmoker === "true",
       smokingData,
-      healthData
+      healthData,
+      appMode: appMode || null
     });
 
     const token = createToken(user._id);

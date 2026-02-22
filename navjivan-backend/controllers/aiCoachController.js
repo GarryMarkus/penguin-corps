@@ -5,6 +5,7 @@ import {
     chatWithAICoach,
     generateAgenticGoalsWithAI,
     generateGoalsWithAI,
+    generateIndianRecipesFromPantry,
     suggestMealWithAI
 } from "../services/aiService.js";
 
@@ -61,6 +62,64 @@ export const analyzeFood = async (req, res) => {
     return res.status(500).json({
       success: false,
       message: "AI Analysis Failed. Check Server Logs.",
+      error: error.message || error.toString()
+    });
+  }
+};
+
+// Generate recipes from pantry ingredients
+export const generatePantryRecipes = async (req, res) => {
+  const { pantryIngredients, mealType } = req.body;
+  
+  if (!pantryIngredients) {
+    return res.status(400).json({ message: "Pantry ingredients required" });
+  }
+
+  try {
+    if (!process.env.OPENROUTER_API_KEY) {
+      // Fallback recipes when API is not available
+      return res.status(200).json({
+        recipes: [
+          {
+            name: "Quick Aloo Bhujia",
+            cuisine: "Indian",
+            ingredients: ["potatoes", "onion", "green chillies", "cumin seeds"],
+            steps: ["1. Boil and cube potatoes", "2. Heat oil, add cumin", "3. Add onion and fry", "4. Add potatoes and spices", "5. Cook till crispy"],
+            time_minutes: 20,
+            video: "https://www.youtube.com/watch?v=example1"
+          },
+          {
+            name: "Simple Dal Tadka",
+            cuisine: "Indian",
+            ingredients: ["toor dal", "onion", "tomato", "garlic"],
+            steps: ["1. Pressure cook dal", "2. Make tadka with garlic and onion", "3. Add tomatoes", "4. Add cooked dal", "5. Simmer 5 mins"],
+            time_minutes: 25,
+            video: "https://www.youtube.com/watch?v=example2"
+          },
+          {
+            name: "Vegetable Fried Rice",
+            cuisine: "Indo-Chinese",
+            ingredients: ["rice", "mixed vegetables", "soy sauce", "garlic"],
+            steps: ["1. Cook rice and cool", "2. Sauté garlic and veggies", "3. Add rice and soy sauce", "4. Toss on high heat", "5. Serve hot"],
+            time_minutes: 15,
+            video: "https://www.youtube.com/watch?v=example3"
+          }
+        ]
+      });
+    }
+
+    const ingredientText = mealType 
+      ? `${pantryIngredients} (for ${mealType})` 
+      : pantryIngredients;
+    
+    const result = await generateIndianRecipesFromPantry(ingredientText);
+    return res.status(200).json(result);
+
+  } catch (error) {
+    console.error("Pantry Recipe Generation Error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Recipe generation failed",
       error: error.message || error.toString()
     });
   }
@@ -532,6 +591,49 @@ Return ONLY this JSON array format:
       success: false,
       message: "Failed to generate training programs",
       error: error.message
+    });
+  }
+};
+// Verify water image using AI
+export const verifyWaterImage = async (req, res) => {
+  const { imageBase64 } = req.body;
+  
+  if (!imageBase64) {
+    return res.status(400).json({ 
+      success: false,
+      message: "Image data required" 
+    });
+  }
+
+  try {
+    if (!process.env.OPENROUTER_API_KEY) {
+      // Fallback - allow logging without AI verification
+      return res.status(200).json({
+        success: true,
+        isWater: true,
+        confidence: 50,
+        reason: "AI verification unavailable - proceeding with manual confirmation",
+        fallback: true
+      });
+    }
+
+    const { verifyWaterImageWithAI } = await import("../services/aiService.js");
+    const result = await verifyWaterImageWithAI(imageBase64);
+    
+    return res.status(200).json({
+      success: true,
+      ...result
+    });
+
+  } catch (error) {
+    console.error("Water verification error:", error);
+    // On error, allow with low confidence
+    return res.status(200).json({
+      success: true,
+      isWater: true,
+      confidence: 30,
+      reason: "Verification temporarily unavailable - please ensure this is drinking water",
+      error: true
     });
   }
 };

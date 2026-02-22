@@ -79,6 +79,12 @@ export const analyzeFoodApi = (foodText: string) =>
 export const suggestSmartMealApi = (history: string[], currentHour: number) =>
   API.post("/ai-coach/suggest-smart-meal", { history, currentHour });
 
+export const generatePantryRecipesApi = (pantryIngredients: string, mealType?: string) =>
+  API.post("/ai-coach/pantry-recipes", { pantryIngredients, mealType });
+
+export const verifyWaterImageApi = (imageBase64: string) =>
+  API.post("/ai-coach/verify-water", { imageBase64 });
+
 interface HealthData {
   height?: string;
   weight?: string;
@@ -115,5 +121,11 @@ export const updateDuoStatsApi = (stats: {
 export const logDuoSmokeApi = (count: number) => API.post("/api/duo/log-smoke", { count });
 export const sendEncouragementApi = (message?: string) => API.post("/api/duo/encourage", { message });
 export const leaveDuoApi = () => API.post("/api/duo/leave");
+export const getPartnerDashboardApi = () => API.get("/api/duo/partner-dashboard");
+export const logForPartnerApi = (type: "water" | "meal" | "smoke", value?: number) => 
+  API.post("/api/duo/log-for-partner", { type, value });
+
+// ── User Mode APIs ──
+export const setAppModeApi = (mode: "solo" | "duo") => API.post("/api/users/set-mode", { mode });
 
 export default API;

@@ -33,7 +33,11 @@ export default function LoginScreen() {
       setError("");
       const res = await API.post<AuthResponse>("/auth/login", { email, password });
       await auth.loginUser(res.data.user, res.data.token);
-      if (res.data.user.isSmoker === false) {
+      
+      // Check if user has selected app mode
+      if (!res.data.user.appMode) {
+        router.replace("/onboarding/mode-selection");
+      } else if (res.data.user.isSmoker === false) {
         router.replace("/fitness");
       } else {
         router.replace("/(tabs)");

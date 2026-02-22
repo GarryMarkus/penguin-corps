@@ -33,6 +33,9 @@ const userSchema = new mongoose.Schema(
     
     pushToken: { type: String, default: null },
 
+    // App Mode: solo or duo
+    appMode: { type: String, enum: ["solo", "duo", null], default: null },
+
     // Duo Mode
     duoId: { type: mongoose.Schema.Types.ObjectId, ref: "Duo", default: null },
 
