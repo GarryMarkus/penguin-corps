@@ -132,6 +132,54 @@ export const analyzeFoodWithAI = async (foodText) => {
 };
 
 /**
+ * Generate quick Indian recipes from pantry ingredients using AI
+ * @param {string} pantryText - Ingredients available in the pantry
+ * @returns {Promise<Object>} - Recipes data object
+ */
+export const generateIndianRecipesFromPantry = async (pantryText) => {
+  if (!pantryText) throw new Error("Pantry ingredients required");
+
+  const prompt = `You are an expert Indian home chef.
+  The user has the following ingredients in their pantry: "${pantryText}".
+
+  Generate 3 QUICK INDIAN recipes that:
+  - Use ONLY these ingredients (plus basic staples like salt, water, oil, common Indian spices).
+  - Are typical Indian home-style dishes.
+  - Are fast (<= 30 minutes).
+  - Include clear numbered step-by-step instructions.
+  - Include a relevant YouTube video link for each recipe.
+
+  Prefer simple dishes like:
+  - sabzi, chaat, dal variations, cheela, upma, pulao, paratha fillings, etc.
+
+  Return ONLY a raw JSON object (no markdown) with this structure:
+  {
+    "recipes": [
+      {
+        "name": "Recipe name",
+        "cuisine": "Indian",
+        "ingredients": ["ingredient 1", "ingredient 2"],
+        "steps": ["Step 1", "Step 2", "Step 3"],
+        "time_minutes": number,
+        "video": "YouTube URL"
+      }
+    ]
+  }`;
+
+  const messages = [
+    {
+      role: "system",
+      content:
+        "You are an Indian chef assistant. Always respond with valid JSON only, no markdown."
+    },
+    { role: "user", content: prompt }
+  ];
+
+  const responseText = await callOpenRouter(messages, true);
+  const cleanJson = responseText.replace(/```json/g, "").replace(/```/g, "").trim();
+  return JSON.parse(cleanJson);
+};
+/**
  * Suggest a smart meal based on eating history and current time
  * @param {Array} history - Array of previously eaten meals
  * @param {number} currentHour - Current hour (0-23)
