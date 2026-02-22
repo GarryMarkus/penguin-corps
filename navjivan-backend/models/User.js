@@ -33,6 +33,9 @@ const userSchema = new mongoose.Schema(
     
     pushToken: { type: String, default: null },
 
+    // Duo Mode
+    duoId: { type: mongoose.Schema.Types.ObjectId, ref: "Duo", default: null },
+
     dailyStats: [dailyStatsSchema],
   },
   { timestamps: true }

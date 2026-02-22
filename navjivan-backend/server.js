@@ -52,6 +52,10 @@ const PORT = process.env.PORT || 5000;
 import userRoutes from "./routes/userRoutes.js";
 app.use("/api/users", userRoutes);
 
+// Duo Mode Routes
+import duoRoutes from "./routes/duoRoutes.js";
+app.use("/api/duo", duoRoutes);
+
 // Push Notification Scheduler
 import { sendDailyMotivationalNotifications } from "./services/pushNotificationService.js";
 

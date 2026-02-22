@@ -104,4 +104,16 @@ export const generateAgenticGoalsApi = (
     bmi,
   });
 
+// ── Duo Mode APIs ──
+export const createDuoApi = () => API.post("/api/duo/create");
+export const joinDuoApi = (inviteCode: string) => API.post("/api/duo/join", { inviteCode });
+export const getDuoStatusApi = () => API.get("/api/duo/status");
+export const updateDuoStatsApi = (stats: {
+  water?: number; meals?: number; goalsCompleted?: number; goalsTotal?: number;
+  smokes?: number; steps?: number; calories?: number;
+}) => API.post("/api/duo/update-stats", stats);
+export const logDuoSmokeApi = (count: number) => API.post("/api/duo/log-smoke", { count });
+export const sendEncouragementApi = (message?: string) => API.post("/api/duo/encourage", { message });
+export const leaveDuoApi = () => API.post("/api/duo/leave");
+
 export default API;

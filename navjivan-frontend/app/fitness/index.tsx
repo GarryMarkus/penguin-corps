@@ -165,6 +165,29 @@ export default function FitnessHomeScreen() {
         })();
     }, []);
 
+    // ── Sync stats to Duo (if active) ──
+    useEffect(() => {
+        const syncDuo = async () => {
+            try {
+                const { updateDuoStatsApi } = await import('../../services/api');
+                await updateDuoStatsApi({
+                    water: waterIntake,
+                    meals: meals.length,
+                    goalsCompleted: completedGoals,
+                    goalsTotal: goals.length,
+                    smokes: smokesToday,
+                    steps: currentSteps,
+                    calories: caloriesBurnt,
+                });
+            } catch (e) {
+                // silently fail if not in a duo
+            }
+        };
+        // Debounce: only sync after 2 seconds of no changes
+        const timer = setTimeout(syncDuo, 2000);
+        return () => clearTimeout(timer);
+    }, [waterIntake, meals.length, completedGoals, smokesToday, currentSteps, caloriesBurnt]);
+
     const getBMICategory = (v: number) => v < 18.5 ? 'Underweight' : v < 25 ? 'Normal' : v < 30 ? 'Overweight' : 'Obese';
     const getBMIColor = (v: number | null) => !v ? '#999' : v < 18.5 ? '#3B82F6' : v < 25 ? LPColors.primary : v < 30 ? '#F59E0B' : '#EF4444';
 
@@ -194,6 +217,8 @@ export default function FitnessHomeScreen() {
         await AsyncStorage.setItem('@daily_smokes_date', new Date().toDateString());
         setSmokeAnim(true); setTimeout(() => setSmokeAnim(false), 4000);
         LPHaptics.error();
+        // Notify duo partner
+        try { const { logDuoSmokeApi } = await import('../../services/api'); await logDuoSmokeApi(n); } catch (e) {}
     };
 
     // Goals
@@ -294,6 +319,7 @@ export default function FitnessHomeScreen() {
                         {/* Select/Start */}
                         <View style={st.ssRow}>
                             <TouchableOpacity onPress={() => setShowBMI(true)} style={st.ssBtn}><Text style={st.ssT}>BMI</Text></TouchableOpacity>
+                            <TouchableOpacity onPress={() => router.push('/duo' as any)} style={[st.ssBtn, { backgroundColor: 'rgba(255,107,107,0.5)', borderWidth: 1, borderColor: PASTEL.coral }]}><Text style={[st.ssT, { color: '#FFF' }]}>🤝 DUO</Text></TouchableOpacity>
                             <TouchableOpacity onPress={() => router.push('/sports-training' as any)} style={st.ssBtn}><Text style={st.ssT}>TRAIN</Text></TouchableOpacity>
                         </View>
                     </Animated.View>
